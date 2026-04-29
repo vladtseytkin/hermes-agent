@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
+    cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
     get_config_path,
@@ -252,7 +253,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+    },
+    "terminal.vercel_runtime": {
+        "type": "select",
+        "description": "Vercel Sandbox runtime",
+        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -287,7 +293,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",
-        "options": ["interrupt", "queue"],
+        "options": ["interrupt", "queue", "steer"],
     },
     "memory.provider": {
         "type": "select",
@@ -338,6 +344,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    "prompt_caching": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -736,7 +743,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
-    except Exception as e:
+    except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -968,7 +975,7 @@ async def update_config(body: ConfigUpdate):
     try:
         save_config(_denormalize_config_from_web(body.config))
         return {"ok": True}
-    except Exception as e:
+    except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -997,7 +1004,7 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
-    except Exception as e:
+    except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1011,7 +1018,7 @@ async def remove_env_var(body: EnvVarDelete):
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _log.exception("DELETE /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1214,6 +1221,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://github.com/QwenLM/qwen-code",
         "status_fn": None,  # dispatched via auth.get_qwen_auth_status
     },
+    {
+        "id": "minimax-oauth",
+        "name": "MiniMax (OAuth)",
+        "flow": "pkce",
+        "cli_command": "hermes auth add minimax-oauth",
+        "docs_url": "https://www.minimax.io",
+        "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
+    },
 )
 
 
@@ -1256,6 +1271,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "token_preview": _truncate_token(raw.get("access_token")),
                 "expires_at": raw.get("expires_at"),
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
+            }
+        if provider_id == "minimax-oauth":
+            raw = hauth.get_minimax_oauth_auth_status()
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": "minimax_oauth",
+                "source_label": f"MiniMax ({raw.get('region', 'global')})",
+                "token_preview": None,
+                "expires_at": raw.get("expires_at"),
+                "has_refresh_token": True,
             }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}
@@ -1568,7 +1593,6 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
-    from hermes_cli import auth as hauth
     if provider_id == "nous":
         from hermes_cli.auth import _request_device_code, PROVIDER_REGISTRY
         import httpx
@@ -2327,16 +2351,14 @@ def _resolve_chat_argv(
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    env: Optional[dict] = None
+    env = os.environ.copy()
+    env.setdefault("NODE_ENV", "production")
 
-    if resume or sidecar_url:
-        env = os.environ.copy()
+    if resume:
+        env["HERMES_TUI_RESUME"] = resume
 
-        if resume:
-            env["HERMES_TUI_RESUME"] = resume
-
-        if sidecar_url:
-            env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+    if sidecar_url:
+        env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
     return list(argv), str(cwd) if cwd else None, env
 
@@ -2905,7 +2927,7 @@ async def get_dashboard_themes():
     them without a stub.
     """
     config = load_config()
-    active = config.get("dashboard", {}).get("theme", "default")
+    active = cfg_get(config, "dashboard", "theme", default="default")
     user_themes = _discover_user_themes()
     seen = set()
     themes = []
