@@ -35,18 +35,68 @@ restartPolicyMaxRetries = 10
 
 If upstream renames `docker/entrypoint.sh`, update the path in `railway.toml`.
 
-## Resolving upstream-merge conflicts
+## Syncing with upstream
+
+### Mental model
+
+This fork is a tiny patchset (2 files: `Dockerfile` + `railway.toml`) sitting on top of upstream `NousResearch/hermes-agent`. Syncing means *replaying* upstream's new work and keeping your patches on top.
+
+GitHub's "Sync fork" button only works when it can fast-forward — i.e., upstream hasn't touched anything near your changes. Once you've diverged (you have), do it locally instead.
+
+### The local-vs-remote split (important)
+
+Everything before `git push` is **local only** and doesn't touch Railway. Only `git push` triggers a Railway redeploy. So if a live process is running on the deployed instance (Telegram chat, autonomous loop, cron job), you can do the entire merge locally and **defer the push** until the process finishes.
+
+Redeploy doesn't wipe `/opt/data` (the volume persists), but it does interrupt anything in-memory: the container gets SIGTERM, restarts, picks up disk state from where it was. Resumable conversations are fine; mid-write disk state is rare but worth waiting out.
+
+### Safe merge workflow
 
 ```bash
-git remote add upstream https://github.com/NousResearch/hermes-agent.git   # one-time
+# One-time: register the upstream remote
+git remote add upstream https://github.com/NousResearch/hermes-agent.git
+
+# Each sync:
 git fetch upstream
+git checkout main
 git merge upstream/main
+# ...resolve conflicts if any (see below)...
+git diff upstream/main -- Dockerfile railway.toml   # verify exactly 2 divergences
+
+# Only when ready (no live process to interrupt):
+git push
 ```
+
+### Conflict resolution
 
 - **`Dockerfile` conflict:** Almost always means upstream touched something near the bottom of the file. Keep upstream's changes everywhere, but ensure the `VOLUME [ "/opt/data" ]` line stays deleted. If upstream removes `VOLUME` themselves, no conflict — accept the merge.
 - **`railway.toml` conflict:** Won't happen because upstream doesn't have this file. If they ever add their own `railway.toml`, keep our `startCommand` (the full tini+entrypoint chain) over any simpler version they propose — the simple one doesn't work.
 
-**Sanity check after every merge:** `git diff upstream/main -- Dockerfile railway.toml` should show exactly these two divergences and nothing else.
+### Pre-push verification
+
+```bash
+git diff upstream/main -- Dockerfile railway.toml
+```
+
+Should show exactly two divergences: the missing `VOLUME` line in `Dockerfile`, and the entire `railway.toml`. Anything else means the merge went sideways — investigate before pushing.
+
+### If something goes wrong after pushing
+
+If a sync breaks the deployed instance:
+
+- **Before pushing:** `git reset --hard ORIG_HEAD` undoes the merge cleanly.
+- **After pushing:** `git revert -m 1 <merge-commit-sha>` and push the revert. Railway will redeploy the reverted state.
+
+Railway will redeploy whatever's on `main`, so don't push a merge you haven't verified.
+
+### Order of operations when you have feature branches in flight
+
+If you also have a feature branch (e.g., `add-claude-md`) waiting to merge to `main`:
+
+1. Merge `upstream/main` into `main` first.
+2. Then merge or rebase your feature branch on top.
+3. Then push.
+
+Cleaner history, and conflicts (if any) surface against upstream first rather than getting tangled with your branch's changes.
 
 ## Railway deployment shape
 
