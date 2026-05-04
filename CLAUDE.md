@@ -100,7 +100,7 @@ Cleaner history, and conflicts (if any) surface against upstream first rather th
 
 ## Railway deployment shape
 
-- Project: `calm-insight` → env `production` → service `hermes-agent`
+- Project: `Derech Hashem - simplified` (originally `calm-insight`) → env `production` → service `Hermes - Derech-Hashem`
 - Mode: **gateway-only** (interactive TUI is not deployed; it needs a PTY which Railway services don't have)
 - Network: unexposed (no public URL); Telegram polling, so no inbound port
 - Volume: mounted at `/opt/data` (= `HERMES_HOME`) — holds config, sessions, memories, skills, `.env`
@@ -115,6 +115,8 @@ Required for the gateway to do anything useful:
 - `OPENROUTER_API_KEY` *or* another model provider key (`OPENAI_API_KEY`, `NOUS_PORTAL_API_KEY`, etc.)
 
 **Do NOT set `HERMES_UID`.** The entrypoint runs `usermod -u $HERMES_UID hermes` when it's set. UID `0` already belongs to root, so `usermod` fails with `UID '0' already exists`, `set -e` kills the script, container exits, Railway restarts — endless crash loop. Leave the variable unset; the entrypoint then keeps the hermes user at default UID 10000 and chowns the volume to it via gosu. The variable only matters for docker-compose setups where the container UID must align with the host's `~/.hermes` owner — Railway volumes have no host-side owner to align to.
+
+**Do NOT set `PATH` using `$PATH` references.** Railway does NOT expand shell variables in env values — `$PATH` is treated as a literal string. So a value like `/opt/data/persistent/bin:/opt/data/.local/bin:$PATH` becomes a `PATH` that doesn't include `/usr/bin` or `/bin`, and `entrypoint.sh` immediately fails with `id: command not found` (line 12) and `mkdir: command not found` (line 67) in an endless crash loop. If you need to extend `PATH`, spell out the system dirs explicitly: `/opt/data/persistent/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`. Better yet, leave `PATH` unset entirely — the Dockerfile already adds `/opt/data/.local/bin` to the system `PATH` correctly.
 
 The full env var reference is `.env.example` in the repo (large, well-commented).
 
