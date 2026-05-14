@@ -4,7 +4,7 @@ This is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/
 
 ## Divergences from upstream
 
-This fork modifies exactly **two files**. Preserve these on every upstream merge.
+This fork modifies exactly **three files**. Preserve these on every upstream merge.
 
 ### 1. `Dockerfile` — `VOLUME` line removed
 
@@ -35,11 +35,21 @@ restartPolicyMaxRetries = 10
 
 If upstream renames `docker/entrypoint.sh`, update the path in `railway.toml`.
 
+### 3. `.gitignore` — `.claude/` added
+
+Claude Code stores per-machine permission settings in `.claude/settings.local.json`. The `.local.json` suffix is Claude Code's "do not commit" convention (the shared half is `settings.json`). Without this entry, fresh checkouts show it as untracked clutter.
+
+**Why ignored rather than committed:**
+- Per-machine state — anyone else cloning the fork would inherit *your* permission cache.
+- Portability is already handled out-of-band: `Dev/sync.sh --backup` copies `Hermes/.claude/settings.local.json` into the meta-repo at `Dev/skills/Hermes/`, so it survives across machines without riding in this repo's history.
+
+If upstream ever adds their own `.gitignore` entry for `.claude/`, no conflict — accept the merge.
+
 ## Syncing with upstream
 
 ### Mental model
 
-This fork is a tiny patchset (2 files: `Dockerfile` + `railway.toml`) sitting on top of upstream `NousResearch/hermes-agent`. Syncing means *replaying* upstream's new work and keeping your patches on top.
+This fork is a tiny patchset (3 files: `Dockerfile`, `railway.toml`, and a single `.gitignore` line for `.claude/`) sitting on top of upstream `NousResearch/hermes-agent`. Syncing means *replaying* upstream's new work and keeping your patches on top.
 
 GitHub's "Sync fork" button only works when it can fast-forward — i.e., upstream hasn't touched anything near your changes. Once you've diverged (you have), do it locally instead.
 
@@ -60,7 +70,7 @@ git fetch upstream
 git checkout main
 git merge upstream/main
 # ...resolve conflicts if any (see below)...
-git diff upstream/main -- Dockerfile railway.toml   # verify exactly 2 divergences
+git diff upstream/main -- Dockerfile railway.toml .gitignore   # verify exactly 3 divergences
 
 # Only when ready (no live process to interrupt):
 git push
@@ -70,14 +80,15 @@ git push
 
 - **`Dockerfile` conflict:** Almost always means upstream touched something near the bottom of the file. Keep upstream's changes everywhere, but ensure the `VOLUME [ "/opt/data" ]` line stays deleted. If upstream removes `VOLUME` themselves, no conflict — accept the merge.
 - **`railway.toml` conflict:** Won't happen because upstream doesn't have this file. If they ever add their own `railway.toml`, keep our `startCommand` (the full tini+entrypoint chain) over any simpler version they propose — the simple one doesn't work.
+- **`.gitignore` conflict:** Rare. If upstream adds an entry near our `.claude/` line, keep both — our line is additive and doesn't conflict with anything they'd plausibly ignore.
 
 ### Pre-push verification
 
 ```bash
-git diff upstream/main -- Dockerfile railway.toml
+git diff upstream/main -- Dockerfile railway.toml .gitignore
 ```
 
-Should show exactly two divergences: the missing `VOLUME` line in `Dockerfile`, and the entire `railway.toml`. Anything else means the merge went sideways — investigate before pushing.
+Should show exactly three divergences: the missing `VOLUME` line in `Dockerfile`, the entire `railway.toml`, and the `.claude/` line added to `.gitignore`. Anything else means the merge went sideways — investigate before pushing.
 
 ### If something goes wrong after pushing
 
